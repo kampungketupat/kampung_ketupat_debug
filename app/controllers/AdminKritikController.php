@@ -1,0 +1,223 @@
+<?php
+// ============================================================
+// AdminKritikController
+// ============================================================
+
+require_once BASE_PATH . '/app/core/Controller.php';
+require_once BASE_PATH . '/app/models/KritikSaranModel.php';
+
+class AdminKritikController extends Controller
+{
+    private $model;
+
+    public function __construct()
+    {
+        if (!isset($_SESSION['admin'])) {
+            header('Location: ' . BASE_URL . '/admin/login');
+            exit;
+        }
+        global $koneksi;
+        $this->model = new KritikSaranModel($koneksi);
+    }
+
+    // =========================
+    // KOTAK MASUK (PENDING)
+    // =========================
+    public function index()
+    {
+        // Auto-expire pesan publik yang sudah lewat tanggal
+        $this->model->expireOtomatis();
+
+        $pesan = $this->model->getPending();
+
+        foreach ($pesan as $p) {
+            if (!$p['sudah_dibaca']) $this->model->tandaiDibaca($p['id']);
+        }
+
+        $data = $this->_hitungStat($pesan);
+        $data['semua_pesan']   = $pesan;
+        $data['jumlah_arsip']  = $this->model->countArsip();
+        $data['judul_halaman'] = 'Kotak Masuk — Kritik & Saran';
+        $data['menu_aktif']    = 'kritik';
+        $data['tab_aktif']     = 'pending';
+
+        $this->_flashMessage($data);
+        $this->view('admin/kritik_saran/index', $data);
+    }
+
+    // =========================
+    // ARSIP (DITERIMA + PUBLIK)
+    // =========================
+    public function arsip()
+    {
+        $this->model->expireOtomatis();
+
+        $pesan = $this->model->getArsip();
+
+        $data = $this->_hitungStat($pesan);
+        $data['semua_pesan']   = $pesan;
+        $data['jumlah_arsip']  = count($pesan);
+        $data['judul_halaman'] = 'Arsip — Kritik & Saran';
+        $data['menu_aktif']    = 'kritik';
+        $data['tab_aktif']     = 'arsip';
+
+        $this->_flashMessage($data);
+        $this->view('admin/kritik_saran/index', $data);
+    }
+
+    // =========================
+    // TERIMA (pending → arsip)
+    // =========================
+    public function terima()
+    {
+        $id = $_GET['id'] ?? null;
+        if (!$id) {
+            $this->_redirect('/admin/kritik-saran', 'ID tidak valid!', 'error');
+            return;
+        }
+
+        if ($this->model->terima((int)$id)) {
+            $this->_redirect('/admin/kritik-saran', 'Pesan diterima dan dipindahkan ke arsip.');
+            return;
+        }
+
+        $this->_logError('Gagal menerima pesan', ['id' => $id]);
+        $this->_redirect('/admin/kritik-saran', 'Gagal memproses pesan.', 'error');
+    }
+
+    // =========================
+    // KEMBALIKAN KE PENDING
+    // =========================
+    public function kembalikan()
+    {
+        $id = $_GET['id'] ?? null;
+        if (!$id) {
+            $this->_redirect('/admin/kritik-saran/arsip', 'ID tidak valid!', 'error');
+            return;
+        }
+
+        if ($this->model->kembalikanPending((int)$id)) {
+            $this->_redirect('/admin/kritik-saran/arsip', 'Pesan dikembalikan ke kotak masuk.');
+            return;
+        }
+
+        $this->_logError('Gagal mengembalikan pesan ke pending', ['id' => $id]);
+        $this->_redirect('/admin/kritik-saran/arsip', 'Gagal memproses pesan.', 'error');
+    }
+
+    // =========================
+    // TAMPILKAN KE PUBLIK
+    // =========================
+    public function tampilkan()
+    {
+        $id      = $_GET['id']     ?? null;
+        $mulai   = $_GET['mulai']  ?? null;
+        $selesai = $_GET['selesai'] ?? null;
+
+        if (!$id || !$mulai || !$selesai) {
+            $this->_redirect('/admin/kritik-saran/arsip', 'Data tidak lengkap!', 'error');
+            return;
+        }
+
+        if (!$this->_isValidDate($mulai) || !$this->_isValidDate($selesai)) {
+            $this->_redirect('/admin/kritik-saran/arsip', 'Format tanggal tidak valid.', 'error');
+            return;
+        }
+
+        if ($selesai < $mulai) {
+            $this->_redirect('/admin/kritik-saran/arsip', 'Tanggal selesai tidak boleh sebelum tanggal mulai.', 'error');
+            return;
+        }
+
+        if ($this->model->tampilkan((int)$id, $mulai, $selesai)) {
+            $this->_redirect('/admin/kritik-saran/arsip', 'Pesan berhasil ditampilkan ke publik.');
+            return;
+        }
+
+        $this->_logError('Gagal menampilkan pesan ke publik', ['id' => $id, 'mulai' => $mulai, 'selesai' => $selesai]);
+        $this->_redirect('/admin/kritik-saran/arsip', 'Gagal memproses pesan.', 'error');
+    }
+
+    // =========================
+    // SEMBUNYIKAN
+    // =========================
+    public function sembunyikan()
+    {
+        $id = $_GET['id'] ?? null;
+        if (!$id) {
+            $this->_redirect('/admin/kritik-saran/arsip', 'ID tidak valid!', 'error');
+            return;
+        }
+
+        if ($this->model->sembunyikan((int)$id)) {
+            $this->_redirect('/admin/kritik-saran/arsip', 'Pesan disembunyikan dari publik.');
+            return;
+        }
+
+        $this->_logError('Gagal menyembunyikan pesan', ['id' => $id]);
+        $this->_redirect('/admin/kritik-saran/arsip', 'Gagal memproses pesan.', 'error');
+    }
+
+    // =========================
+    // HAPUS PERMANEN
+    // =========================
+    public function hapus()
+    {
+        $id = $_GET['id'] ?? null;
+        if (!$id) {
+            $this->_redirect('/admin/kritik-saran', 'ID tidak valid!', 'error');
+            return;
+        }
+
+        if ($this->model->hapus((int)$id)) {
+            $this->_redirect('/admin/kritik-saran', 'Pesan berhasil dihapus.');
+            return;
+        }
+
+        $this->_logError('Gagal menghapus pesan', ['id' => $id]);
+        $this->_redirect('/admin/kritik-saran', 'Gagal menghapus pesan.', 'error');
+    }
+
+    // =========================
+    // HELPERS PRIVATE
+    // =========================
+    private function _hitungStat(array $pesan): array
+    {
+        return [
+            'total_kritik'     => count(array_filter($pesan, fn($p) => $p['jenis'] === 'kritik')),
+            'total_saran'      => count(array_filter($pesan, fn($p) => $p['jenis'] === 'saran')),
+            'total_pertanyaan' => count(array_filter($pesan, fn($p) => $p['jenis'] === 'pertanyaan')),
+            'total_apresiasi'  => count(array_filter($pesan, fn($p) => $p['jenis'] === 'apresiasi')),
+        ];
+    }
+
+    private function _flashMessage(array &$data): void
+    {
+        if (!empty($_SESSION['success'])) {
+            $data['pesan_sukses'] = $_SESSION['success'];
+            unset($_SESSION['success']);
+        }
+        if (!empty($_SESSION['error'])) {
+            $data['pesan_error'] = $_SESSION['error'];
+            unset($_SESSION['error']);
+        }
+    }
+
+    private function _redirect(string $path, string $msg, string $type = 'success'): void
+    {
+        $_SESSION[$type === 'error' ? 'error' : 'success'] = $msg;
+        header('Location: ' . BASE_URL . $path);
+        exit;
+    }
+
+    private function _isValidDate(string $date): bool
+    {
+        $d = DateTime::createFromFormat('Y-m-d', $date);
+        return $d && $d->format('Y-m-d') === $date;
+    }
+
+    private function _logError(string $message, array $context = []): void
+    {
+        error_log('[AdminKritikController] ' . $message . ' ' . json_encode($context));
+    }
+}
